@@ -64,11 +64,12 @@ class UniqueProductsMongoStore:
         try:
             document = product.dict()
             result = await self.collection.insert_one(document)
-            logger.info(f"Inserted unique product: {product.product_hash[:8]}...")
+            # Убираем логирование для каждой вставки
+            # logger.info(f"Inserted unique product: {product.product_hash[:8]}...")
             return True
         except Exception as e:
             if "duplicate key error" in str(e):
-                logger.warning(f"Product already exists: {product.product_hash[:8]}...")
+                # logger.warning(f"Product already exists: {product.product_hash[:8]}...")
                 return False
             else:
                 logger.error(f"Error inserting unique product: {e}")
@@ -115,7 +116,8 @@ class UniqueProductsMongoStore:
             )
 
             if result.modified_count > 0:
-                logger.info(f"Updated unique product: {product_hash[:8]}...")
+                # Убираем логирование для каждого обновления
+                # logger.info(f"Updated unique product: {product_hash[:8]}...")
                 return True
             return False
 

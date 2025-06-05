@@ -26,6 +26,11 @@ class ProductDeduplicationService:
         self.unique_products_store = unique_products_store
         self.supplier_fetcher = supplier_fetcher
 
+        # Счетчики для логирования
+        self._suppliers_processed = 0
+        self._products_inserted = 0
+        self._products_updated = 0
+
     def _create_product_hash(self, okpd2_code: str, standardized_attributes: List[Dict[str, Any]]) -> str:
         """Создать уникальный хеш товара на основе OKPD2 и атрибутов"""
         # Сортируем атрибуты по standard_name для консистентности
@@ -46,7 +51,8 @@ class ProductDeduplicationService:
         hash_string = "|".join(hash_parts)
         product_hash = hashlib.sha256(hash_string.encode()).hexdigest()
 
-        logger.debug(f"Created hash {product_hash[:8]}... for {okpd2_code} with {len(sorted_attrs)} attributes")
+        # Убираем debug логирование для каждого хеша
+        # logger.debug(f"Created hash {product_hash[:8]}... for {okpd2_code} with {len(sorted_attrs)} attributes")
 
         return product_hash
 
@@ -104,6 +110,11 @@ class ProductDeduplicationService:
     async def process_batch(self, limit: int = 1000) -> Dict[str, Any]:
         """Обработать батч стандартизированных товаров"""
         logger.info(f"Starting product deduplication batch, limit={limit}")
+
+        # Сбрасываем счетчики
+        self._suppliers_processed = 0
+        self._products_inserted = 0
+        self._products_updated = 0
 
         # 1. Получаем стандартизированные товары
         filters = {
@@ -181,6 +192,11 @@ class ProductDeduplicationService:
         product_ids = [p["_id"] for p in standardized_products]
         await self.standardized_store.mark_as_grouped(product_ids)
 
+        # Логируем итоговую статистику
+        logger.info(f"Batch complete: processed {self._suppliers_processed} suppliers, "
+                    f"created {self._products_inserted} new unique products, "
+                    f"updated {self._products_updated} existing products")
+
         return {
             "processed": len(standardized_products),
             "groups_created": groups_created,
@@ -227,6 +243,7 @@ class ProductDeduplicationService:
 
         # Дедуплицируем поставщиков
         unique_suppliers = self._deduplicate_suppliers(all_suppliers)
+        self._suppliers_processed += len(all_suppliers)
 
         # Получаем дополнительную информацию из первого товара
         sample_info = {}
@@ -256,7 +273,10 @@ class ProductDeduplicationService:
         )
 
         # Сохраняем в БД
-        return await self.unique_products_store.insert_unique_product(unique_product)
+        result = await self.unique_products_store.insert_unique_product(unique_product)
+        if result:
+            self._products_inserted += 1
+        return result
 
     async def _update_product_group(
             self,
@@ -299,7 +319,7 @@ class ProductDeduplicationService:
                         new_suppliers.append(supplier_with_meta)
 
         if not new_sources:
-            logger.debug("No new sources to add")
+            # logger.debug("No new sources to add")
             return False
 
         # Объединяем поставщиков
@@ -311,16 +331,20 @@ class ProductDeduplicationService:
 
         # Новые поставщики
         all_suppliers.extend(new_suppliers)
+        self._suppliers_processed += len(new_suppliers)
 
         # Дедуплицируем
         unique_suppliers = self._deduplicate_suppliers(all_suppliers)
 
         # Обновляем группу
-        return await self.unique_products_store.update_unique_product(
+        result = await self.unique_products_store.update_unique_product(
             product_hash=existing_group["product_hash"],
             new_sources=new_sources,
             unique_suppliers=unique_suppliers
         )
+        if result:
+            self._products_updated += 1
+        return result
 
     def _deduplicate_suppliers(self, suppliers: List[Dict[str, Any]]) -> List[UniqueSupplier]:
         """Дедуплицировать поставщиков"""
@@ -364,7 +388,8 @@ class ProductDeduplicationService:
                 logger.warning(f"Error creating UniqueSupplier: {e}")
                 continue
 
-        logger.info(f"Deduplicated {len(suppliers)} suppliers to {len(unique_suppliers)} unique")
+        # Убираем логирование для каждой дедупликации
+        # logger.info(f"Deduplicated {len(suppliers)} suppliers to {len(unique_suppliers)} unique")
 
         return unique_suppliers
 
