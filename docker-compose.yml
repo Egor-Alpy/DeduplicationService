@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # Redis для координации
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"  # Другой порт, чтобы не конфликтовать
+    volumes:
+      - redis_data:/data
+
+  # API сервис
+  api:
+    build: .
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8001
+
+  # Воркер дедупликации
+  deduplication-worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - WORKER_ID=dedup_worker_1
+      - REDIS_URL=redis://redis:6379
+      - DEDUPLICATION_BATCH_SIZE=1000
+      - WORKER_DELAY=5
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    command: python -m src.workers.deduplication_worker --worker-id dedup_worker_1
+
+  # Второй воркер (опционально)
+  deduplication-worker-2:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - WORKER_ID=dedup_worker_2
+      - REDIS_URL=redis://redis:6379
+      - DEDUPLICATION_BATCH_SIZE=1000
+      - WORKER_DELAY=5
+    depends_on:
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    command: python -m src.workers.deduplication_worker --worker-id dedup_worker_2
+    profiles:
+      - scale
+
+volumes:
+  redis_data:

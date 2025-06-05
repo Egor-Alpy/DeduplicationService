@@ -1,0 +1,24 @@
+# FastAPI
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# База данных
+motor==3.3.2
+redis==4.6.0
+pymongo==4.6.0
+
+# Утилиты
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# Логирование
+python-json-logger==2.0.7
+
+# Визуализация и мониторинг
+rich==13.7.0
+
+# Обработка данных
+pandas==2.1.4
+openpyxl==3.1.2
