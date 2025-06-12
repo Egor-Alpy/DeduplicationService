@@ -247,13 +247,70 @@ class ProductDeduplicationService:
             )
 
             if original_product:
-                # Извлекаем поставщиков
-                for supplier in original_product.get("suppliers", []):
-                    supplier_with_meta = supplier.copy()
-                    supplier_with_meta["source_product_id"] = product["old_mongo_id"]
-                    supplier_with_meta["collection_name"] = product["collection_name"]
-                    supplier_with_meta["created_at"] = original_product.get("created_at", "")
-                    all_suppliers.append(supplier_with_meta)
+                # ОТЛАДКА: логируем структуру исходного товара
+                logger.debug(f"Original product keys: {list(original_product.keys())}")
+
+                # Пробуем найти поставщиков в разных местах
+                suppliers_data = None
+
+                # Вариант 1: поле suppliers
+                if "suppliers" in original_product:
+                    suppliers_data = original_product["suppliers"]
+                    logger.info(f"Found {len(suppliers_data)} suppliers in 'suppliers' field")
+
+                # Вариант 2: поле supplier (единственный поставщик)
+                elif "supplier" in original_product:
+                    supplier = original_product["supplier"]
+                    if isinstance(supplier, dict):
+                        # Преобразуем в формат с supplier_offers
+                        supplier_with_offers = {
+                            "supplier_name": supplier.get("name", supplier.get("supplier_name", "")),
+                            "supplier_tel": supplier.get("tel", supplier.get("supplier_tel", "")),
+                            "supplier_address": supplier.get("address", supplier.get("supplier_address", "")),
+                            "supplier_description": supplier.get("description",
+                                                                 supplier.get("supplier_description", "")),
+                            "supplier_offers": [{
+                                "qnt": original_product.get("qnt", 0),
+                                "discount": original_product.get("discount", 0),
+                                "price": original_product.get("price", 0),
+                                "purchase_url": original_product.get("purchase_url", "")
+                            }]
+                        }
+                        suppliers_data = [supplier_with_offers]
+                        logger.info("Found single supplier in 'supplier' field")
+
+                # Вариант 3: поставщик на верхнем уровне
+                elif any(key in original_product for key in ["supplier_name", "supplier_tel"]):
+                    supplier_with_offers = {
+                        "supplier_name": original_product.get("supplier_name", ""),
+                        "supplier_tel": original_product.get("supplier_tel", ""),
+                        "supplier_address": original_product.get("supplier_address", ""),
+                        "supplier_description": original_product.get("supplier_description", ""),
+                        "supplier_offers": [{
+                            "qnt": original_product.get("qnt", 0),
+                            "discount": original_product.get("discount", 0),
+                            "price": original_product.get("price", 0),
+                            "purchase_url": original_product.get("purchase_url", "")
+                        }]
+                    }
+                    suppliers_data = [supplier_with_offers]
+                    logger.info("Found supplier info at top level")
+
+                else:
+                    logger.warning(
+                        f"No supplier data found in product {product['old_mongo_id']}. Available keys: {list(original_product.keys())[:10]}")
+
+                # Обрабатываем найденных поставщиков
+                if suppliers_data:
+                    for supplier in suppliers_data:
+                        supplier_with_meta = supplier.copy()
+                        supplier_with_meta["source_product_id"] = product["old_mongo_id"]
+                        supplier_with_meta["collection_name"] = product["collection_name"]
+                        supplier_with_meta["created_at"] = original_product.get("created_at", "")
+                        all_suppliers.append(supplier_with_meta)
+            else:
+                logger.warning(
+                    f"Could not fetch original product {product['old_mongo_id']} from {product['collection_name']}")
 
         # Дедуплицируем поставщиков
         unique_suppliers = self._deduplicate_suppliers(all_suppliers)
@@ -268,9 +325,9 @@ class ProductDeduplicationService:
             )
             if first_original:
                 sample_info = {
-                    "sample_title": first_original.get("title"),
-                    "sample_brand": first_original.get("brand"),
-                    "sample_article": first_original.get("article")
+                    "sample_title": first_original.get("title", first_original.get("name", "")),
+                    "sample_brand": first_original.get("brand", ""),
+                    "sample_article": first_original.get("article", "")
                 }
 
         # Подсчитываем общее количество предложений
@@ -332,12 +389,50 @@ class ProductDeduplicationService:
                 )
 
                 if original_product:
-                    for supplier in original_product.get("suppliers", []):
-                        supplier_with_meta = supplier.copy()
-                        supplier_with_meta["source_product_id"] = product["old_mongo_id"]
-                        supplier_with_meta["collection_name"] = product["collection_name"]
-                        supplier_with_meta["created_at"] = original_product.get("created_at", "")
-                        new_suppliers.append(supplier_with_meta)
+                    # Используем ту же логику поиска поставщиков
+                    suppliers_data = None
+
+                    if "suppliers" in original_product:
+                        suppliers_data = original_product["suppliers"]
+                    elif "supplier" in original_product:
+                        supplier = original_product["supplier"]
+                        if isinstance(supplier, dict):
+                            supplier_with_offers = {
+                                "supplier_name": supplier.get("name", supplier.get("supplier_name", "")),
+                                "supplier_tel": supplier.get("tel", supplier.get("supplier_tel", "")),
+                                "supplier_address": supplier.get("address", supplier.get("supplier_address", "")),
+                                "supplier_description": supplier.get("description",
+                                                                     supplier.get("supplier_description", "")),
+                                "supplier_offers": [{
+                                    "qnt": original_product.get("qnt", 0),
+                                    "discount": original_product.get("discount", 0),
+                                    "price": original_product.get("price", 0),
+                                    "purchase_url": original_product.get("purchase_url", "")
+                                }]
+                            }
+                            suppliers_data = [supplier_with_offers]
+                    elif any(key in original_product for key in ["supplier_name", "supplier_tel"]):
+                        supplier_with_offers = {
+                            "supplier_name": original_product.get("supplier_name", ""),
+                            "supplier_tel": original_product.get("supplier_tel", ""),
+                            "supplier_address": original_product.get("supplier_address", ""),
+                            "supplier_description": original_product.get("supplier_description", ""),
+                            "supplier_offers": [{
+                                "qnt": original_product.get("qnt", 0),
+                                "discount": original_product.get("discount", 0),
+                                "price": original_product.get("price", 0),
+                                "purchase_url": original_product.get("purchase_url", "")
+                            }]
+                        }
+                        suppliers_data = [supplier_with_offers]
+
+                    if suppliers_data:
+                        for supplier in suppliers_data:
+                            supplier_with_meta = supplier.copy()
+                            supplier_with_meta["source_product_id"] = product["old_mongo_id"]
+                            supplier_with_meta["collection_name"] = product["collection_name"]
+                            supplier_with_meta["created_at"] = original_product.get("created_at", "")
+                            new_suppliers.append(supplier_with_meta)
 
         if not new_sources:
             return False
