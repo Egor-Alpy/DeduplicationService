@@ -51,9 +51,6 @@ class ProductDeduplicationService:
         hash_string = "|".join(hash_parts)
         product_hash = hashlib.sha256(hash_string.encode()).hexdigest()
 
-        # Убираем debug логирование для каждого хеша
-        # logger.debug(f"Created hash {product_hash[:8]}... for {okpd2_code} with {len(sorted_attrs)} attributes")
-
         return product_hash
 
     def _normalize_phone(self, phone: Optional[str]) -> str:
@@ -106,6 +103,23 @@ class ProductDeduplicationService:
 
         supplier_key = "|".join(key_parts)
         return supplier_key
+
+    def _create_offer_key(self, offer: Dict[str, Any]) -> str:
+        """Создать уникальный ключ предложения для дедупликации"""
+        # Извлекаем цену
+        price_value = offer.get("price", 0)
+        if isinstance(price_value, dict):
+            price_value = price_value.get("price", 0)
+
+        # Создаем ключ из всех значимых полей предложения
+        offer_key_parts = [
+            str(offer.get("qnt", 0)),
+            str(price_value),
+            str(offer.get("discount", 0)),
+            self._extract_domain(offer.get("purchase_url", ""))
+        ]
+
+        return "|".join(offer_key_parts)
 
     async def process_batch(self, limit: int = 1000) -> Dict[str, Any]:
         """Обработать батч стандартизированных товаров"""
@@ -259,6 +273,12 @@ class ProductDeduplicationService:
                     "sample_article": first_original.get("article")
                 }
 
+        # Подсчитываем общее количество предложений
+        total_offers = sum(
+            len(supplier.supplier_offers)
+            for supplier in unique_suppliers
+        )
+
         # Создаем объект UniqueProduct
         unique_product = UniqueProduct(
             product_hash=product_hash,
@@ -269,6 +289,7 @@ class ProductDeduplicationService:
             unique_suppliers=unique_suppliers,
             total_sources=len(source_products),
             unique_suppliers_count=len(unique_suppliers),
+            total_offers_count=total_offers,
             **sample_info
         )
 
@@ -319,7 +340,6 @@ class ProductDeduplicationService:
                         new_suppliers.append(supplier_with_meta)
 
         if not new_sources:
-            # logger.debug("No new sources to add")
             return False
 
         # Объединяем поставщиков
@@ -347,49 +367,114 @@ class ProductDeduplicationService:
         return result
 
     def _deduplicate_suppliers(self, suppliers: List[Dict[str, Any]]) -> List[UniqueSupplier]:
-        """Дедуплицировать поставщиков"""
-        supplier_map = {}
+        """
+        Дедуплицировать поставщиков
+
+        Логика:
+        1. Группируем поставщиков по ключу (имя + телефон + домен)
+        2. Для каждого поставщика собираем ВСЕ его предложения
+        3. Дедуплицируем предложения внутри поставщика (удаляем полностью идентичные)
+        """
+        supplier_groups = {}
 
         for supplier in suppliers:
-            key = self._create_supplier_key(supplier)
+            supplier_key = self._create_supplier_key(supplier)
 
-            if key not in supplier_map:
-                # Первое вхождение поставщика
-                supplier_map[key] = supplier
-            else:
-                # Сравниваем даты и оставляем более свежее предложение
-                existing_date = supplier_map[key].get("created_at", "")
-                new_date = supplier.get("created_at", "")
+            if supplier_key not in supplier_groups:
+                # Первое вхождение поставщика - создаем структуру
+                supplier_groups[supplier_key] = {
+                    "supplier_key": supplier_key,
+                    "supplier_name": supplier.get("supplier_name", ""),
+                    "supplier_tel": supplier.get("supplier_tel"),
+                    "supplier_address": supplier.get("supplier_address"),
+                    "supplier_description": supplier.get("supplier_description"),
+                    "all_offers": [],  # Все предложения от этого поставщика
+                    "source_products_info": [],  # Информация об источниках
+                    "last_updated": datetime.utcnow()
+                }
 
-                # Простое сравнение строк дат
-                if new_date > existing_date:
-                    supplier_map[key] = supplier
+            # Добавляем предложения от этого поставщика
+            supplier_offers = supplier.get("supplier_offers", [])
+            created_at = supplier.get("created_at", "")
+            source_product_id = supplier.get("source_product_id", "")
+            collection_name = supplier.get("collection_name", "")
+
+            # Добавляем метаданные к каждому предложению
+            for offer in supplier_offers:
+                enriched_offer = offer.copy()
+                enriched_offer["created_at"] = created_at
+                enriched_offer["source_product_id"] = source_product_id
+                enriched_offer["collection_name"] = collection_name
+
+                supplier_groups[supplier_key]["all_offers"].append(enriched_offer)
+
+            # Добавляем информацию об источнике
+            source_info = {
+                "source_product_id": source_product_id,
+                "collection_name": collection_name,
+                "created_at": created_at
+            }
+
+            # Проверяем, не добавлен ли уже этот источник
+            if not any(s["source_product_id"] == source_product_id
+                       for s in supplier_groups[supplier_key]["source_products_info"]):
+                supplier_groups[supplier_key]["source_products_info"].append(source_info)
 
         # Преобразуем в модели UniqueSupplier
         unique_suppliers = []
 
-        for key, supplier_data in supplier_map.items():
+        for supplier_key, supplier_data in supplier_groups.items():
             try:
+                # Дедуплицируем предложения внутри поставщика
+                unique_offers = []
+                seen_offer_keys = set()
+
+                for offer in supplier_data["all_offers"]:
+                    # Создаем ключ для дедупликации предложений
+                    offer_key = self._create_offer_key(offer)
+
+                    # Добавляем только уникальные предложения
+                    if offer_key not in seen_offer_keys:
+                        seen_offer_keys.add(offer_key)
+                        unique_offers.append(offer)
+
+                # Если нет предложений, пропускаем поставщика
+                if not unique_offers:
+                    logger.warning(f"Supplier {supplier_data['supplier_name']} has no offers, skipping")
+                    continue
+
+                # Берем URL из первого предложения для обратной совместимости
+                purchase_url = unique_offers[0].get("purchase_url") if unique_offers else None
+
+                # Берем последний source_product_id для обратной совместимости
+                last_source = supplier_data["source_products_info"][-1] if supplier_data["source_products_info"] else {}
+
                 unique_supplier = UniqueSupplier(
-                    supplier_key=key,
-                    supplier_name=supplier_data.get("supplier_name", ""),
+                    supplier_key=supplier_key,
+                    supplier_name=supplier_data["supplier_name"],
                     supplier_tel=supplier_data.get("supplier_tel"),
                     supplier_address=supplier_data.get("supplier_address"),
                     supplier_description=supplier_data.get("supplier_description"),
-                    supplier_offers=supplier_data.get("supplier_offers", []),
-                    purchase_url=supplier_data.get("supplier_offers", [{}])[0].get("purchase_url") if supplier_data.get(
-                        "supplier_offers") else None,
-                    last_updated=datetime.utcnow(),
-                    source_product_id=supplier_data.get("source_product_id", ""),
-                    collection_name=supplier_data.get("collection_name", "")
+                    supplier_offers=unique_offers,  # Уникальные предложения
+                    purchase_url=purchase_url,
+                    last_updated=supplier_data["last_updated"],
+                    source_product_id=last_source.get("source_product_id", ""),
+                    collection_name=last_source.get("collection_name", ""),
+                    source_products_info=supplier_data["source_products_info"]
                 )
                 unique_suppliers.append(unique_supplier)
+
+                # Логируем только если есть дедупликация
+                if len(unique_offers) < len(supplier_data["all_offers"]):
+                    logger.info(f"Supplier {supplier_data['supplier_name']}: "
+                                f"{len(supplier_data['all_offers'])} offers -> {len(unique_offers)} unique offers "
+                                f"from {len(supplier_data['source_products_info'])} sources")
+
             except Exception as e:
                 logger.warning(f"Error creating UniqueSupplier: {e}")
                 continue
 
-        # Убираем логирование для каждой дедупликации
-        # logger.info(f"Deduplicated {len(suppliers)} suppliers to {len(unique_suppliers)} unique")
+        logger.info(f"Deduplicated {len(suppliers)} supplier entries to {len(unique_suppliers)} unique suppliers")
 
         return unique_suppliers
 

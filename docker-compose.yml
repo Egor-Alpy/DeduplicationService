@@ -5,7 +5,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6380:6379"  # Другой порт, чтобы не конфликтовать
+      - "6379:6379"  # Другой порт, чтобы не конфликтовать
     volumes:
       - redis_data:/data
 
@@ -13,7 +13,7 @@ services:
   api:
     build: .
     ports:
-      - "8001:8001"
+      - "8000:8000"
     env_file:
       - .env
     environment:
@@ -22,7 +22,7 @@ services:
       - redis
     volumes:
       - ./logs:/app/logs
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8001
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
 
   # Воркер дедупликации
   deduplication-worker:
